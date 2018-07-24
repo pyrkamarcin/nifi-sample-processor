@@ -19,6 +19,9 @@ import org.apache.nifi.processor.util.StandardValidators
 
 import com.fasterxml.jackson.module.kotlin.*
 import java.util.*
+import java.util.HashMap
+import org.apache.nifi.flowfile.FlowFile
+
 
 @Tags("example", "test")
 @CapabilityDescription("Provide a description")
@@ -26,7 +29,7 @@ import java.util.*
 @ReadsAttributes(ReadsAttribute(attribute = "", description = ""))
 @WritesAttributes(WritesAttribute(attribute = "", description = ""))
 
-data class Person(val name: String, val age: Int, var gender: String?)
+data class Identity(val username: String, val password: String)
 
 class MyProcessor : AbstractProcessor() {
     private var descriptors: List<PropertyDescriptor>? = null
@@ -34,16 +37,6 @@ class MyProcessor : AbstractProcessor() {
     private var relationships: Set<Relationship>? = null
 
     private val mapper = jacksonObjectMapper()
-
-    override fun init(context: ProcessorInitializationContext?) {
-        val descriptors = ArrayList<PropertyDescriptor>()
-        descriptors.add(MY_PROPERTY)
-        this.descriptors = Collections.unmodifiableList(descriptors)
-
-        val relationships = HashSet<Relationship>()
-        relationships.add(SUCCESS)
-        this.relationships = Collections.unmodifiableSet(relationships)
-    }
 
     override fun getRelationships(): Set<Relationship>? {
         return this.relationships
@@ -53,6 +46,65 @@ class MyProcessor : AbstractProcessor() {
         return descriptors
     }
 
+    companion object {
+
+        val POOL_ID = PropertyDescriptor.Builder().name("POOL_ID")
+                .displayName("POOL_ID")
+                .description("")
+                .required(true)
+                .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+                .build()!!
+        val CLIENTAPP_ID = PropertyDescriptor.Builder().name("CLIENTAPP_ID")
+                .displayName("CLIENTAPP_ID")
+                .description("")
+                .required(true)
+                .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+                .build()!!
+        val FED_POOL_ID = PropertyDescriptor.Builder().name("FED_POOL_ID")
+                .displayName("FED_POOL_ID")
+                .description("")
+                .required(true)
+                .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+                .build()!!
+        val CUSTOMDOMAIN = PropertyDescriptor.Builder().name("CUSTOMDOMAIN")
+                .displayName("CUSTOMDOMAIN")
+                .description("")
+                .required(true)
+                .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+                .build()!!
+        val REGION = PropertyDescriptor.Builder().name("REGION")
+                .displayName("REGION")
+                .description("")
+                .required(true)
+                .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+                .build()!!
+
+        val SUCCESS = Relationship.Builder()
+                .name("SUCCESS")
+                .description("SUCCESS relationship")
+                .build()!!
+
+        val FAILURE = Relationship.Builder()
+                .name("FAILURE")
+                .description("FAILURE relationship")
+                .build()!!
+    }
+
+    override fun init(context: ProcessorInitializationContext?) {
+        val descriptors = ArrayList<PropertyDescriptor>()
+        descriptors.add(POOL_ID)
+        descriptors.add(CLIENTAPP_ID)
+        descriptors.add(FED_POOL_ID)
+        descriptors.add(CUSTOMDOMAIN)
+        descriptors.add(REGION)
+        this.descriptors = Collections.unmodifiableList(descriptors)
+
+        val relationships = HashSet<Relationship>()
+        relationships.add(SUCCESS)
+        relationships.add(FAILURE)
+        this.relationships = Collections.unmodifiableSet(relationships)
+    }
+
     @Throws(ProcessException::class)
     override fun onTrigger(context: ProcessContext, session: ProcessSession) {
         val flowFile = session.get() ?: return
@@ -60,11 +112,24 @@ class MyProcessor : AbstractProcessor() {
 
         var outgoingFlowFile = session.write(flowFile) { input, output ->
             val json: String = input.bufferedReader().use { it.readText() }
-            val person: Person = mapper.readValue(json)
-            person.gender = "male"
-            val newJson: String = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(person)
-            logger.info("Successfully regenerate {} class", arrayOf("Person"))
-            output.write(newJson.toByteArray())
+            val identity: Identity = mapper.readValue(json)
+
+            val POOL_ID = getPropertyValue(POOL_ID, context, flowFile)
+            val CLIENTAPP_ID = getPropertyValue(CLIENTAPP_ID, context, flowFile)
+            val FED_POOL_ID = getPropertyValue(FED_POOL_ID, context, flowFile)
+            val CUSTOMDOMAIN = getPropertyValue(CUSTOMDOMAIN, context, flowFile)
+            val REGION = getPropertyValue(REGION, context, flowFile)
+
+            val cognitoHelper = CognitoHelper(
+                    POOL_ID,
+                    CLIENTAPP_ID,
+                    FED_POOL_ID,
+                    CUSTOMDOMAIN,
+                    REGION
+            )
+
+            val response = cognitoHelper.signInUser(identity.username, identity.password)
+            output.write(response.toByteArray())
         }
 
         attributes[CoreAttributes.MIME_TYPE.key()] = "application/json"
@@ -72,19 +137,8 @@ class MyProcessor : AbstractProcessor() {
         outgoingFlowFile = session.putAllAttributes(outgoingFlowFile, attributes)
         session.transfer(outgoingFlowFile, SUCCESS)
     }
+}
 
-    companion object {
-
-        val MY_PROPERTY = PropertyDescriptor.Builder().name("MY_PROPERTY")
-                .displayName("My property")
-                .description("Example Property")
-                .required(true)
-                .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
-                .build()!!
-
-        val SUCCESS = Relationship.Builder()
-                .name("SUCCESS")
-                .description("Success relationship")
-                .build()!!
-    }
+private fun getPropertyValue(property: PropertyDescriptor, context: ProcessContext, flowfile: FlowFile): String {
+    return context.getProperty(property).evaluateAttributeExpressions(flowfile).value
 }
